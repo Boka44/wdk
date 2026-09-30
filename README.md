@@ -11,7 +11,7 @@ A flexible manager for orchestrating WDK wallet and protocol modules through a s
 
 ## About WDK
 
-This module is part of the [**WDK (Wallet Development Kit)**](https://docs.wdk.tether.io/) project, which empowers developers to build secure, non-custodial wallets with unified blockchain access, stateless architecture, and complete user control.
+This module is part of [**WDK (Wallet Development Kit) by Tether**](https://docs.wdk.tether.io/), which empowers developers to build secure, non-custodial wallets with unified blockchain access, stateless architecture, and complete user control.
 
 For detailed documentation about the complete WDK ecosystem, visit [docs.wdk.tether.io](https://docs.wdk.tether.io).
 
