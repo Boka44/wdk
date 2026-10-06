@@ -27,6 +27,11 @@ import PolicyEngine from './policy/policy-engine.js'
 /** @typedef {import('./wallet-account-with-protocols.js').IWalletAccountWithProtocols} IWalletAccountWithProtocols */
 
 /**
+ * @template {any[]} A
+ * @typedef {import('./wallet-account-with-protocols.js').ProtocolConstructor<A>} ProtocolConstructor
+ */
+
+/**
  * The shape returned by `getAccount` / `getAccountByPath`: the underlying
  * IWalletAccount (sendTransaction, signTransaction, transfer, approve,
  * sign, …) plus the protocol-getter surface added by the WDK at account
@@ -151,14 +156,14 @@ export default class WDK {
    * same type bound to the same blockchain with the same label).
    *
    * @see {@link IWalletAccountWithProtocols#registerProtocol} to register protocols only for specific accounts.
-   * @template {typeof SwapProtocol | typeof BridgeProtocol | typeof LendingProtocol | typeof FiatProtocol | typeof SwidgeProtocol | typeof SdaProtocol} P
+   * @template {any[]} A
    * @param {string} blockchain - The name of the blockchain the protocol must be bound to. Can be any string (e.g., "ethereum").
    * @param {string} label - The label.
-   * @param {P} Protocol - The protocol class.
-   * @param {ConstructorParameters<P>[1]} config - The protocol configuration.
+   * @param {ProtocolConstructor<A>} Protocol - The protocol class.
+   * @param {NoInfer<A>} config - The protocol configuration.
    * @returns {WDK} The WDK.
    */
-  registerProtocol (blockchain, label, Protocol, config) {
+  registerProtocol (blockchain, label, Protocol, ...config) {
     if (Protocol.prototype instanceof SwidgeProtocol) {
       this._protocols.swidge[blockchain] ??= Object.create(null)
 
@@ -356,19 +361,19 @@ export default class WDK {
 
     this._decoratedAccounts.add(account)
 
-    account.registerProtocol = (label, Protocol, config) => {
+    account.registerProtocol = (label, Protocol, ...config) => {
       if (Protocol.prototype instanceof SwidgeProtocol) {
-        protocols.swidge[label] = new Protocol(account, config)
+        protocols.swidge[label] = new Protocol(account, ...config)
       } else if (Protocol.prototype instanceof SdaProtocol) {
-        protocols.sda[label] = new Protocol(account, config)
+        protocols.sda[label] = new Protocol(account, ...config)
       } else if (Protocol.prototype instanceof SwapProtocol) {
-        protocols.swap[label] = new Protocol(account, config)
+        protocols.swap[label] = new Protocol(account, ...config)
       } else if (Protocol.prototype instanceof BridgeProtocol) {
-        protocols.bridge[label] = new Protocol(account, config)
+        protocols.bridge[label] = new Protocol(account, ...config)
       } else if (Protocol.prototype instanceof LendingProtocol) {
-        protocols.lending[label] = new Protocol(account, config)
+        protocols.lending[label] = new Protocol(account, ...config)
       } else if (Protocol.prototype instanceof FiatProtocol) {
-        protocols.fiat[label] = new Protocol(account, config)
+        protocols.fiat[label] = new Protocol(account, ...config)
       }
 
       return account
@@ -378,7 +383,7 @@ export default class WDK {
       if (this._protocols.swap[blockchain]?.[label]) {
         const { Protocol, config } = this._protocols.swap[blockchain][label]
 
-        const protocol = new Protocol(account, config)
+        const protocol = new Protocol(account, ...config)
 
         return protocol
       }
@@ -394,7 +399,7 @@ export default class WDK {
       if (this._protocols.bridge[blockchain]?.[label]) {
         const { Protocol, config } = this._protocols.bridge[blockchain][label]
 
-        const protocol = new Protocol(account, config)
+        const protocol = new Protocol(account, ...config)
 
         return protocol
       }
@@ -410,7 +415,7 @@ export default class WDK {
       if (this._protocols.lending[blockchain]?.[label]) {
         const { Protocol, config } = this._protocols.lending[blockchain][label]
 
-        const protocol = new Protocol(account, config)
+        const protocol = new Protocol(account, ...config)
 
         return protocol
       }
@@ -426,7 +431,7 @@ export default class WDK {
       if (this._protocols.fiat[blockchain]?.[label]) {
         const { Protocol, config } = this._protocols.fiat[blockchain][label]
 
-        const protocol = new Protocol(account, config)
+        const protocol = new Protocol(account, ...config)
 
         return protocol
       }
@@ -442,7 +447,7 @@ export default class WDK {
       if (this._protocols.swidge[blockchain]?.[label]) {
         const { Protocol, config } = this._protocols.swidge[blockchain][label]
 
-        const protocol = new Protocol(account, config)
+        const protocol = new Protocol(account, ...config)
 
         return protocol
       }
@@ -458,7 +463,7 @@ export default class WDK {
       if (this._protocols.sda[blockchain]?.[label]) {
         const { Protocol, config } = this._protocols.sda[blockchain][label]
 
-        const protocol = new Protocol(account, config)
+        const protocol = new Protocol(account, ...config)
 
         return protocol
       }
