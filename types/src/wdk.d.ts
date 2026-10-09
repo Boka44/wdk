@@ -54,14 +54,14 @@ export default class WDK {
      * same type bound to the same blockchain with the same label).
      *
      * @see {@link IWalletAccountWithProtocols#registerProtocol} to register protocols only for specific accounts.
-     * @template {typeof SwapProtocol | typeof BridgeProtocol | typeof LendingProtocol | typeof FiatProtocol | typeof SwidgeProtocol | typeof SdaProtocol} P
+     * @template {any[]} A
      * @param {string} blockchain - The name of the blockchain the protocol must be bound to. Can be any string (e.g., "ethereum").
      * @param {string} label - The label.
-     * @param {P} Protocol - The protocol class.
-     * @param {ConstructorParameters<P>[1]} config - The protocol configuration.
+     * @param {ProtocolConstructor<A>} Protocol - The protocol class.
+     * @param {NoInfer<A>} config - The protocol configuration.
      * @returns {WDK} The WDK.
      */
-    registerProtocol<P extends typeof SwapProtocol | typeof BridgeProtocol | typeof LendingProtocol | typeof FiatProtocol | typeof SwidgeProtocol | typeof SdaProtocol>(blockchain: string, label: string, Protocol: P, config: ConstructorParameters<P>[1]): WDK;
+    registerProtocol<A extends any[]>(blockchain: string, label: string, Protocol: ProtocolConstructor<A>, ...config: NoInfer<A>): WDK;
     /**
      * Registers a new middleware to the WDK.
      *
@@ -147,6 +147,7 @@ export default class WDK {
 export type IWalletAccount = import("@tetherto/wdk-wallet").IWalletAccount;
 export type FeeRates = import("@tetherto/wdk-wallet").FeeRates;
 export type IWalletAccountWithProtocols = import("./wallet-account-with-protocols.js").IWalletAccountWithProtocols;
+export type ProtocolConstructor<A extends any[]> = import("./wallet-account-with-protocols.js").ProtocolConstructor<A>;
 /**
  * The shape returned by `getAccount` / `getAccountByPath`: the underlying
  * IWalletAccount (sendTransaction, signTransaction, transfer, approve,

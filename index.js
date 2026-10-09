@@ -21,6 +21,14 @@
 /** @typedef {import('./src/wdk.js').WdkOptions} WdkOptions */
 
 /** @typedef {import('./src/wallet-account-with-protocols.js').IWalletAccountWithProtocols} IWalletAccountWithProtocols */
+
+/** @typedef {import('./src/wallet-account-with-protocols.js').Protocol} Protocol */
+
+/**
+ * @template {any[]} A
+ * @typedef {import('./src/wallet-account-with-protocols.js').ProtocolConstructor<A>} ProtocolConstructor
+ */
+
 /** @typedef {import('./src/wdk.js').WdkAccount} WdkAccount */
 
 /** @typedef {import('./src/policy/index.js').Policy} Policy */
