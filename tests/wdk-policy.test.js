@@ -2911,6 +2911,47 @@ wdk.registerPolicy({
       }
     })
   })
+
+  describe('account path binding integrity', () => {
+    const allowAll = { id: 'allow-all', name: 'allow-all', scope: 'project', rules: [{ name: 'a', operation: '*', action: 'ALLOW', conditions: [] }] }
+    const freeze = { id: 'freeze', name: 'freeze', scope: 'account', wallet: 'ethereum', accounts: [PATH_DEFAULT], rules: [{ name: 'deny', operation: 'sendTransaction', action: 'DENY', conditions: [] }] }
+
+    test('a path-bound DENY is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freeze)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
+    })
+
+    test.each([
+      ['Object.defineProperty(path)', (a) => Object.defineProperty(a, 'path', { value: "0'/0/9" })],
+      ['path assignment', (a) => { a.path = "0'/0/9" }],
+      ['_path assignment', (a) => { a._path = "0'/0/9" }]
+    ])('the proxy refuses to change or shadow the path via %s', async (_label, mutate) => {
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freeze)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      expect(() => mutate(account)).toThrow(TypeError)
+      expect(account.path).toBe(PATH_DEFAULT)
+    })
+  })
   // -------------------------------------------------------------------------
   // Method coverage: deny-by-default proxy + exclusion set
   // -------------------------------------------------------------------------
