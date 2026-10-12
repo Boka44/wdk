@@ -52,10 +52,6 @@ function isProtectedMember (prop) {
   return prop === 'keyPair' || (typeof prop === 'string' && prop.startsWith('_'))
 }
 
-function isPathMember (prop) {
-  return prop === 'path' || prop === '_path'
-}
-
 /**
  * Wraps `subject` in a Proxy that serves `substitutions` in place of the
  * subject's own members and treats protected members as absent.
@@ -127,21 +123,6 @@ function createGuardedProxy (subject, substitutions) {
 
     ownKeys (target) {
       return Reflect.ownKeys(target).filter((prop) => !isProtectedMember(prop))
-    },
-
-    // Refuse to change or shadow `path` / `_path` through the proxy, so a
-    // later `getAccount()` can't be handed a spoofed path and skip the wrap.
-    // Internal writes bind to the real account, so they're unaffected.
-    set (target, prop, value, receiver) {
-      if (isPathMember(prop)) return false
-
-      return Reflect.set(target, prop, value, receiver)
-    },
-
-    defineProperty (target, prop, descriptor) {
-      if (isPathMember(prop)) return false
-
-      return Reflect.defineProperty(target, prop, descriptor)
     },
 
     preventExtensions () {

@@ -2934,12 +2934,9 @@ wdk.registerPolicy({
       expect(err.policyId).toBe('freeze')
     })
 
-    test.each([
-      ['Object.defineProperty(path)', (a) => Object.defineProperty(a, 'path', { value: "0'/0/9" })],
-      ['path assignment', (a) => { a.path = "0'/0/9" }],
-      ['_path assignment', (a) => { a._path = "0'/0/9" }]
-    ])('the proxy refuses to change or shadow the path via %s', async (_label, mutate) => {
-      getAccountMock.mockResolvedValue(buildAccount())
+    test('simulate is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
 
       wdk
         .registerWallet('ethereum', WalletManagerMock, {})
@@ -2948,8 +2945,46 @@ wdk.registerPolicy({
 
       const account = await wdk.getAccount('ethereum', 0)
 
-      expect(() => mutate(account)).toThrow(TypeError)
-      expect(account.path).toBe(PATH_DEFAULT)
+      raw.path = "0'/0/9"
+
+      const result = await account.simulate.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(result.decision).toBe('DENY')
+      expect(result.policy_id).toBe('freeze')
+    })
+
+    test('a later getAccount() stays governed after the account path is reassigned', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {}).registerPolicy(freeze)
+
+      await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
+    })
+
+    test('a later getAccount() stays governed after the prototype path getter is swapped', async () => {
+      const raw = buildAccount()
+      delete raw.path
+      Object.setPrototypeOf(raw, { get path () { return PATH_DEFAULT } })
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {}).registerPolicy(freeze)
+
+      await wdk.getAccount('ethereum', 0)
+
+      Object.setPrototypeOf(raw, { get path () { return "0'/0/9" } })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
     })
   })
   // -------------------------------------------------------------------------
