@@ -147,7 +147,7 @@ export type PolicyRule = {
      */
     action: PolicyAction;
     /**
-     * - When true on an account-scope ALLOW rule that matches, the rule's verdict short-circuits project-scope evaluation. Account-scope rules are evaluated in registration order; the first matching override-flag rule wins. Only valid on account-scope ALLOW rules.
+     * - When true on an account-scope ALLOW rule that matches, the rule short-circuits project-scope evaluation. A later account-scope DENY still wins: the full account group is evaluated first, and the override only skips the broader (project) scope when no account-scope DENY matches. The first matching override is the one reported. Only valid on account-scope ALLOW rules.
      */
     override_broader_scope?: boolean;
     /**

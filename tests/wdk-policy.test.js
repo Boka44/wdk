@@ -1606,6 +1606,32 @@ wdk.registerPolicy({
       expect(err.policyId).toBe('account-freeze')
     })
 
+    test('a later ALLOW condition is not evaluated once an override is recorded', async () => {
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      const laterCondition = jest.fn(() => true)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'treasury',
+          name: 'treasury',
+          scope: 'account',
+          wallet: 'ethereum',
+          accounts: [PATH_DEFAULT],
+          rules: [
+            { name: 'override', operation: 'sendTransaction', action: 'ALLOW', override_broader_scope: true, conditions: [] },
+            { name: 'later', operation: 'sendTransaction', action: 'ALLOW', conditions: [laterCondition] }
+          ]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const result = await account.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(result.hash).toBe(DUMMY_TX_HASH)
+      expect(laterCondition).not.toHaveBeenCalled()
+    })
+
     test('account-scope policies only engage for accounts whose path is in the accounts array', async () => {
       getAccountByPathMock.mockImplementation(async (path) => buildAccount(path))
 
