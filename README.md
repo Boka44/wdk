@@ -98,6 +98,8 @@ const result = await account.simulate.sendTransaction({ to: '0x…', value: 1n }
 // → { decision: 'ALLOW' | 'DENY', policy_id, matched_rule, reason, trace }
 ```
 
+`account.simulate` evaluates only the operation you call. It does not execute it, so it can't see the calls that operation would make internally — simulating `getSwapProtocol(label).swap(...)` checks the `swap` operation, not the `sendTransaction` the swap would issue at run time. A real `swap()` still evaluates both.
+
 Policies have two scopes — `project` and `account`. A project-scope policy applies globally by default, or only to the wallets named in its `wallet` field (`wallet: 'ethereum'` or `wallet: ['ethereum', 'ton']`). The `wallet` value is the same string passed to `registerWallet`. It might be a chain name like `"ethereum"`, but it could equally be `"treasury-cold"` or any label the consumer chose; the engine treats it as an opaque key. An account-scope policy must declare a `wallet` and targets specific accounts within it, identified by either derivation path (`accounts: ["0'/0/0"]`) or integer index (`accounts: [0, 1]`) — index entries match accounts retrieved via `wdk.getAccount(wallet, index)`; path entries match either retrieval style. Evaluation is narrowest-first with `DENY` winning across scopes. Account-scope `ALLOW` rules can opt into `override_broader_scope: true` to short-circuit broader policies for explicit exceptions (e.g., treasury accounts). Conditions can be sync or async and may carry user-owned state via closures. Templates (`@tetherto/wdk-policy-templates`) and a portal UI for editing policies are coming in later phases.
 
 ### Condition context

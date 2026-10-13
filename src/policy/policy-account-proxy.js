@@ -34,14 +34,16 @@ import PolicyViolationError, { PolicyConfigurationError } from './policy-error.j
  * @property {PolicyEngine} engine - The engine that evaluates each intercepted call.
  */
 
-const PROTOCOL_GETTERS = [
-  'getSwapProtocol',
-  'getBridgeProtocol',
-  'getLendingProtocol',
-  'getFiatProtocol',
-  'getSwidgeProtocol',
-  'getSdaProtocol'
-]
+const PROTOCOL_CATEGORIES = {
+  getSwapProtocol: 'swap',
+  getBridgeProtocol: 'bridge',
+  getLendingProtocol: 'lending',
+  getFiatProtocol: 'fiat',
+  getSwidgeProtocol: 'swidge',
+  getSdaProtocol: 'sda'
+}
+
+const PROTOCOL_GETTERS = Object.keys(PROTOCOL_CATEGORIES)
 
 const EMPTY_METHODS = new Map()
 
@@ -191,13 +193,18 @@ export async function createPolicyEnforcedAccount (account, { blockchain, path, 
     substitutions.set(op, buildEnforcedMethod(op, method.bind(account), ctx))
   }
 
-  for (const getterName of PROTOCOL_GETTERS) {
-    if (typeof account[getterName] !== 'function') continue
+  // Late-bound reference to the proxy, so protocols build against it and
+  // `registerProtocol` can hand it back.
+  const handle = { proxy: null }
 
-    const originalGetter = account[getterName].bind(account)
+  for (const getterName of PROTOCOL_GETTERS) {
+    if (typeof account._buildProtocol !== 'function') break
+
+    const category = PROTOCOL_CATEGORIES[getterName]
 
     substitutions.set(getterName, (label) => {
-      const protocol = originalGetter(label)
+      // Build against the proxy so the protocol's own account calls are gated.
+      const protocol = account._buildProtocol(category, label, handle.proxy)
 
       return wrapProtocolInProxy(protocol, ctx)
     })
@@ -205,15 +212,8 @@ export async function createPolicyEnforcedAccount (account, { blockchain, path, 
 
   substitutions.set('simulate', buildSimulateMirror(enforcedOperations, ctx))
 
-  // Late-bound reference to the proxy itself, so the `registerProtocol`
-  // interceptor below can return the proxy instead of the raw account.
-  const handle = { proxy: null }
-
-  // `account.registerProtocol(...)` returns the raw account by design (see
-  // `_registerProtocols` in wdk.js). Without intercepting,
-  // `proxy.registerProtocol(...).sendTransaction(...)` would skip enforcement
-  // entirely because the caller is no longer holding the proxy. Rewrite the
-  // return value to the proxy itself.
+  // `registerProtocol` returns the raw account by design; rewrite it to the
+  // proxy so chained `.registerProtocol(...).sendTransaction(...)` stays gated.
   if (typeof account.registerProtocol === 'function') {
     const registerProtocol = account.registerProtocol.bind(account)
 
@@ -358,6 +358,16 @@ function wrapProtocolInProxy (protocol, ctx) {
   return createGuardedProxy(protocol, substitutions)
 }
 
+/**
+ * Builds the `simulate` mirror: a method per governed operation that evaluates
+ * policy without executing. Since it never runs the operation, it only checks
+ * the operation named, not the account calls that operation would make at run
+ * time (a real call still evaluates both).
+ *
+ * @param {string[]} methodNames - The governed operation names to mirror.
+ * @param {EnforcementContext} ctx - The per-account enforcement state.
+ * @returns {object} The `simulate` surface.
+ */
 function buildSimulateMirror (methodNames, ctx) {
   const simulate = Object.create(null)
 
