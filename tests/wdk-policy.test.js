@@ -855,6 +855,33 @@ describe('WDK — policy engine', () => {
       expect(account.keyPair).toBeUndefined()
     })
 
+    test('simulate builds a per-account protocol against the governed account, not the raw one', async () => {
+      let seenKeyPair = 'unset'
+
+      class CapturingSwapProtocol extends SwapProtocol {
+        constructor (account) { super(); seenKeyPair = account.keyPair }
+        async swap () { return DUMMY_TX_HASH }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, {
+        keyPair: { privateKey: new Uint8Array([1, 2, 3]) }
+      }))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(projectAllowAll('p'))
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      account.registerProtocol('velora', CapturingSwapProtocol, {})
+
+      // simulate must build the protocol against the proxy, which hides keyPair;
+      // otherwise a registered class could read key material past a DENY.
+      account.simulate.getSwapProtocol('velora')
+
+      expect(seenKeyPair).toBeUndefined()
+    })
+
     test('internal references (_signer, _provider, _config) are not reachable through a governed account', async () => {
       getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, {
         _signer: { signTransaction: jest.fn() },

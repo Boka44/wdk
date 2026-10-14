@@ -210,7 +210,7 @@ export async function createPolicyEnforcedAccount (account, { blockchain, path, 
     })
   }
 
-  substitutions.set('simulate', buildSimulateMirror(enforcedOperations, ctx))
+  substitutions.set('simulate', buildSimulateMirror(enforcedOperations, ctx, handle))
 
   // `registerProtocol` returns the raw account by design; rewrite it to the
   // proxy so chained `.registerProtocol(...).sendTransaction(...)` stays gated.
@@ -362,13 +362,16 @@ function wrapProtocolInProxy (protocol, ctx) {
  * Builds the `simulate` mirror: a method per governed operation that evaluates
  * policy without executing. Since it never runs the operation, it only checks
  * the operation named, not the account calls that operation would make at run
- * time (a real call still evaluates both).
+ * time. (For a protocol added via `account.registerProtocol` a real call does
+ * evaluate those internal calls too; a `wdk.registerProtocol` protocol runs on
+ * the raw account, so its internal calls are not evaluated.)
  *
  * @param {string[]} methodNames - The governed operation names to mirror.
  * @param {EnforcementContext} ctx - The per-account enforcement state.
+ * @param {{ proxy: object }} handle - Late-bound reference to the enforced proxy.
  * @returns {object} The `simulate` surface.
  */
-function buildSimulateMirror (methodNames, ctx) {
+function buildSimulateMirror (methodNames, ctx, handle) {
   const simulate = Object.create(null)
 
   for (const name of methodNames) {
@@ -385,18 +388,20 @@ function buildSimulateMirror (methodNames, ctx) {
   }
 
   for (const getterName of PROTOCOL_GETTERS) {
-    if (typeof ctx.account[getterName] !== 'function') continue
+    if (typeof ctx.account._buildProtocol !== 'function') break
 
-    const originalGetter = ctx.account[getterName].bind(ctx.account)
+    const category = PROTOCOL_CATEGORIES[getterName]
 
-    // Resolve the protocol at call time and mirror the same surface the
-    // enforced proxy governs. Deriving it from a fixed verb list instead would
-    // hide every method outside that list from simulate while the engine still
-    // blocked it — the opposite of what simulate is for.
+    // Build against the proxy, like the enforced getter, so a per-account
+    // protocol never receives the raw account here. Enumerate the protocol's
+    // own methods rather than a fixed verb list, so simulate mirrors exactly
+    // the surface the engine governs.
     simulate[getterName] = (label) => {
       const out = Object.create(null)
 
-      for (const method of collectGovernedMethods(originalGetter(label), ctx.engine).keys()) {
+      const protocol = ctx.account._buildProtocol(category, label, handle.proxy)
+
+      for (const method of collectGovernedMethods(protocol, ctx.engine).keys()) {
         out[method] = async (...args) => {
           const context = buildContext({
             operation: method,
