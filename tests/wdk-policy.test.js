@@ -778,6 +778,69 @@ describe('WDK — policy engine', () => {
   // -------------------------------------------------------------------------
 
   describe('internal-reference containment', () => {
+    test('a per-account registered protocol receives the governed account, so its internal account writes are policy-gated', async () => {
+      class MySwapProtocol extends SwapProtocol {
+        constructor (account) { super(); this._account = account }
+        async swap () { return this._account.sendTransaction({ to: RECIPIENT, value: 1n }) }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'allow-swap-deny-send',
+          name: 'allow-swap-deny-send',
+          scope: 'project',
+          rules: [
+            { name: 'allow-swap', operation: 'swap', action: 'ALLOW', conditions: [] },
+            { name: 'deny-send', operation: 'sendTransaction', action: 'DENY', conditions: [] }
+          ]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      // Per-account protocols are built lazily against the governed account they
+      // are requested through, so their internal account calls are policy-gated.
+      account.registerProtocol('velora', MySwapProtocol, {})
+      const swap = account.getSwapProtocol('velora')
+
+      const denied = await catchAsync(() => swap.swap())
+
+      expect(denied.name).toBe('PolicyViolationError')
+      expect(denied.ruleName).toBe('deny-send')
+      expect(sendTransactionMock).not.toHaveBeenCalled()
+    })
+
+    test('a wdk.registerProtocol protocol is built against the raw account, so a constructor that reads account._config does not throw', async () => {
+      // Published protocols (Velora, Aave, USDT0) read `account._config` in
+      // their constructors. The proxy hides `_` members, so building them
+      // against the governed account would throw. Globals stay on the raw
+      // account until those packages stop reading `account._config`.
+      class ConfigReadingProtocol extends SwapProtocol {
+        constructor (account) { super(); this._provider = account._config.provider }
+        async swap () { return DUMMY_TX_HASH }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, { _config: { provider: 'rpc' } }))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerProtocol('ethereum', 'velora', ConfigReadingProtocol, {})
+        .registerPolicy({
+          id: 'allow-swap',
+          name: 'allow-swap',
+          scope: 'project',
+          rules: [{ name: 'allow-swap', operation: 'swap', action: 'ALLOW', conditions: [] }]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      expect(() => account.getSwapProtocol('velora')).not.toThrow()
+      expect(() => account.simulate.getSwapProtocol('velora')).not.toThrow()
+      expect(await account.getSwapProtocol('velora').swap()).toBe(DUMMY_TX_HASH)
+    })
+
     test('key material (keyPair) is not reachable through a governed account', async () => {
       getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, {
         keyPair: { privateKey: new Uint8Array([1, 2, 3]) }
@@ -790,6 +853,33 @@ describe('WDK — policy engine', () => {
       const account = await wdk.getAccount('ethereum', 0)
 
       expect(account.keyPair).toBeUndefined()
+    })
+
+    test('simulate builds a per-account protocol against the governed account, not the raw one', async () => {
+      let seenKeyPair = 'unset'
+
+      class CapturingSwapProtocol extends SwapProtocol {
+        constructor (account) { super(); seenKeyPair = account.keyPair }
+        async swap () { return DUMMY_TX_HASH }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, {
+        keyPair: { privateKey: new Uint8Array([1, 2, 3]) }
+      }))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(projectAllowAll('p'))
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      account.registerProtocol('velora', CapturingSwapProtocol, {})
+
+      // simulate must build the protocol against the proxy, which hides keyPair;
+      // otherwise a registered class could read key material past a DENY.
+      account.simulate.getSwapProtocol('velora')
+
+      expect(seenKeyPair).toBeUndefined()
     })
 
     test('valueOf returns the proxy, not the unwrapped account or protocol', async () => {
@@ -2159,7 +2249,7 @@ wdk.registerPolicy({
       expect(swapInstanceMock).not.toHaveBeenCalled()
     })
 
-    test('a protocol method (bridge) that internally calls account.sendTransaction triggers nested-call escape', async () => {
+    test('a protocol method (bridge) that internally calls account.sendTransaction has the nested call policy-evaluated', async () => {
       const condition = jest.fn().mockReturnValue(true)
 
       class MyBridgeProtocol extends BridgeProtocol {
@@ -2173,7 +2263,6 @@ wdk.registerPolicy({
 
       wdk
         .registerWallet('ethereum', WalletManagerMock, {})
-        .registerProtocol('ethereum', 'oft', MyBridgeProtocol, {})
         .registerPolicy({
           id: 'nested',
           name: 'nested',
@@ -2185,14 +2274,20 @@ wdk.registerPolicy({
         })
 
       const account = await wdk.getAccount('ethereum', 0)
+
+      account.registerProtocol('oft', MyBridgeProtocol, {})
       const bridge = account.getBridgeProtocol('oft')
 
       const result = await bridge.bridge()
 
       expect(result.hash).toBe(DUMMY_TX_HASH)
-      expect(condition).toHaveBeenCalledTimes(1)
+      expect(condition).toHaveBeenCalledTimes(2)
       expect(condition).toHaveBeenCalledWith(expect.objectContaining({
         operation: 'bridge',
+        wallet: 'ethereum'
+      }))
+      expect(condition).toHaveBeenCalledWith(expect.objectContaining({
+        operation: 'sendTransaction',
         wallet: 'ethereum'
       }))
       expect(sendTransactionMock).toHaveBeenCalledTimes(1)

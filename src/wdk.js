@@ -357,122 +357,55 @@ export default class WDK {
   _registerProtocols (account, { blockchain }) {
     if (this._decoratedAccounts.has(account)) return
 
-    const protocols = { swap: Object.create(null), bridge: Object.create(null), lending: Object.create(null), fiat: Object.create(null), swidge: Object.create(null), sda: Object.create(null) }
-
     this._decoratedAccounts.add(account)
 
+    // Recipes registered via `account.registerProtocol`, built lazily in the
+    // getters so a protocol requested after a policy applies is constructed
+    // against the governed account, not a stale raw one.
+    const registered = { swap: Object.create(null), bridge: Object.create(null), lending: Object.create(null), fiat: Object.create(null), swidge: Object.create(null), sda: Object.create(null) }
+
+    const categoryOf = (Protocol) => {
+      if (Protocol.prototype instanceof SwidgeProtocol) return 'swidge'
+      if (Protocol.prototype instanceof SdaProtocol) return 'sda'
+      if (Protocol.prototype instanceof SwapProtocol) return 'swap'
+      if (Protocol.prototype instanceof BridgeProtocol) return 'bridge'
+      if (Protocol.prototype instanceof LendingProtocol) return 'lending'
+      if (Protocol.prototype instanceof FiatProtocol) return 'fiat'
+
+      return null
+    }
+
     account.registerProtocol = (label, Protocol, ...config) => {
-      if (Protocol.prototype instanceof SwidgeProtocol) {
-        protocols.swidge[label] = new Protocol(account, ...config)
-      } else if (Protocol.prototype instanceof SdaProtocol) {
-        protocols.sda[label] = new Protocol(account, ...config)
-      } else if (Protocol.prototype instanceof SwapProtocol) {
-        protocols.swap[label] = new Protocol(account, ...config)
-      } else if (Protocol.prototype instanceof BridgeProtocol) {
-        protocols.bridge[label] = new Protocol(account, ...config)
-      } else if (Protocol.prototype instanceof LendingProtocol) {
-        protocols.lending[label] = new Protocol(account, ...config)
-      } else if (Protocol.prototype instanceof FiatProtocol) {
-        protocols.fiat[label] = new Protocol(account, ...config)
-      }
+      const category = categoryOf(Protocol)
+
+      if (category) registered[category][label] = { Protocol, config }
 
       return account
     }
 
-    account.getSwapProtocol = (label) => {
-      if (this._protocols.swap[blockchain]?.[label]) {
-        const { Protocol, config } = this._protocols.swap[blockchain][label]
+    // Globals build against the raw account: published packages read
+    // `account._config` in their constructors, which the proxy hides. Per-account
+    // protocols build against `subject` (the proxy passes itself) so their own
+    // account calls stay policy-gated. `_`-prefixed to stay hidden from callers.
+    account._buildProtocol = (category, label, subject = account) => {
+      const global = this._protocols[category][blockchain]?.[label]
 
-        const protocol = new Protocol(account, ...config)
+      if (global) return new global.Protocol(account, ...global.config)
 
-        return protocol
+      if (registered[category][label]) {
+        const { Protocol, config } = registered[category][label]
+
+        return new Protocol(subject, ...config)
       }
 
-      if (protocols.swap[label]) {
-        return protocols.swap[label]
-      }
-
-      throw new Error(`No swap protocol registered for label: ${label}.`)
+      throw new Error(`No ${category} protocol registered for label: ${label}.`)
     }
 
-    account.getBridgeProtocol = (label) => {
-      if (this._protocols.bridge[blockchain]?.[label]) {
-        const { Protocol, config } = this._protocols.bridge[blockchain][label]
-
-        const protocol = new Protocol(account, ...config)
-
-        return protocol
-      }
-
-      if (protocols.bridge[label]) {
-        return protocols.bridge[label]
-      }
-
-      throw new Error(`No bridge protocol registered for label: ${label}.`)
-    }
-
-    account.getLendingProtocol = (label) => {
-      if (this._protocols.lending[blockchain]?.[label]) {
-        const { Protocol, config } = this._protocols.lending[blockchain][label]
-
-        const protocol = new Protocol(account, ...config)
-
-        return protocol
-      }
-
-      if (protocols.lending[label]) {
-        return protocols.lending[label]
-      }
-
-      throw new Error(`No lending protocol registered for label: ${label}.`)
-    }
-
-    account.getFiatProtocol = (label) => {
-      if (this._protocols.fiat[blockchain]?.[label]) {
-        const { Protocol, config } = this._protocols.fiat[blockchain][label]
-
-        const protocol = new Protocol(account, ...config)
-
-        return protocol
-      }
-
-      if (protocols.fiat[label]) {
-        return protocols.fiat[label]
-      }
-
-      throw new Error(`No fiat protocol registered for label: ${label}.`)
-    }
-
-    account.getSwidgeProtocol = (label) => {
-      if (this._protocols.swidge[blockchain]?.[label]) {
-        const { Protocol, config } = this._protocols.swidge[blockchain][label]
-
-        const protocol = new Protocol(account, ...config)
-
-        return protocol
-      }
-
-      if (protocols.swidge[label]) {
-        return protocols.swidge[label]
-      }
-
-      throw new Error(`No swidge protocol registered for label: ${label}.`)
-    }
-
-    account.getSdaProtocol = (label) => {
-      if (this._protocols.sda[blockchain]?.[label]) {
-        const { Protocol, config } = this._protocols.sda[blockchain][label]
-
-        const protocol = new Protocol(account, ...config)
-
-        return protocol
-      }
-
-      if (protocols.sda[label]) {
-        return protocols.sda[label]
-      }
-
-      throw new Error(`No sda protocol registered for label: ${label}.`)
-    }
+    account.getSwapProtocol = (label) => account._buildProtocol('swap', label)
+    account.getBridgeProtocol = (label) => account._buildProtocol('bridge', label)
+    account.getLendingProtocol = (label) => account._buildProtocol('lending', label)
+    account.getFiatProtocol = (label) => account._buildProtocol('fiat', label)
+    account.getSwidgeProtocol = (label) => account._buildProtocol('swidge', label)
+    account.getSdaProtocol = (label) => account._buildProtocol('sda', label)
   }
 }
