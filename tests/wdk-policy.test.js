@@ -1681,6 +1681,68 @@ wdk.registerPolicy({
       expect(err.policyId).toBe('platform-denylist')
     })
 
+    test.each(['override-first', 'deny-first'])('a later account-scope DENY wins over an override ALLOW (%s)', async (order) => {
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      const override = {
+        id: 'treasury',
+        name: 'treasury',
+        scope: 'account',
+        wallet: 'ethereum',
+        accounts: [PATH_DEFAULT],
+        rules: [{ name: 'treasury-allow', operation: 'sendTransaction', action: 'ALLOW', override_broader_scope: true, conditions: [] }]
+      }
+
+      const deny = {
+        id: 'account-freeze',
+        name: 'account-freeze',
+        scope: 'account',
+        wallet: 'ethereum',
+        accounts: [PATH_DEFAULT],
+        rules: [{ name: 'freeze', operation: 'sendTransaction', action: 'DENY', conditions: [] }]
+      }
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {})
+
+      if (order === 'override-first') {
+        wdk.registerPolicy(override).registerPolicy(deny)
+      } else {
+        wdk.registerPolicy(deny).registerPolicy(override)
+      }
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 50n }))
+
+      expect(err.name).toBe('PolicyViolationError')
+      expect(err.policyId).toBe('account-freeze')
+    })
+
+    test('a later ALLOW condition is not evaluated once an override is recorded', async () => {
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      const laterCondition = jest.fn(() => true)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'treasury',
+          name: 'treasury',
+          scope: 'account',
+          wallet: 'ethereum',
+          accounts: [PATH_DEFAULT],
+          rules: [
+            { name: 'override', operation: 'sendTransaction', action: 'ALLOW', override_broader_scope: true, conditions: [] },
+            { name: 'later', operation: 'sendTransaction', action: 'ALLOW', conditions: [laterCondition] }
+          ]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const result = await account.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(result.hash).toBe(DUMMY_TX_HASH)
+      expect(laterCondition).not.toHaveBeenCalled()
+    })
+
     test('account-scope policies only engage for accounts whose path is in the accounts array', async () => {
       getAccountByPathMock.mockImplementation(async (path) => buildAccount(path))
 

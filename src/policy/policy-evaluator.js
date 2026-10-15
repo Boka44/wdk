@@ -96,12 +96,18 @@ function addresses (policies, operation) {
 
 async function evalGroup (policies, context, trace, scope, { allowOverride }) {
   const allows = []
+  let override = null
 
   for (const policy of policies) {
     const conditionTimeoutMs = policy._conditionTimeoutMs
 
     for (const rule of policy.rules) {
       if (!ruleAddressesOperation(rule, context.operation)) continue
+
+      // Once an override is recorded, only a later DENY can change the result.
+      // Skip non-DENY rules before running their conditions, so their latency
+      // and any stateful side effects (rate-limit counters, etc.) don't fire.
+      if (override !== null && rule.action !== 'DENY') continue
 
       const failClose = rule.action === 'DENY'
       const { matched, error } = await evalConditions(rule.conditions, context, { conditionTimeoutMs, failClose })
@@ -124,13 +130,17 @@ async function evalGroup (policies, context, trace, scope, { allowOverride }) {
         return { kind: 'DENY', policyId: policy.id, ruleName: rule.name, reason }
       }
 
+      // Record the first matching override but keep scanning: a later DENY in
+      // this scope must still win. The override only skips the broader scope.
       if (allowOverride && rule.override_broader_scope === true) {
-        return { kind: 'ALLOW_FINAL', policyId: policy.id, ruleName: rule.name }
+        override = { policyId: policy.id, ruleName: rule.name }
       }
 
       allows.push({ policyId: policy.id, ruleName: rule.name })
     }
   }
+
+  if (override !== null) return { kind: 'ALLOW_FINAL', ...override }
 
   return { kind: 'CONTINUE', allows }
 }
