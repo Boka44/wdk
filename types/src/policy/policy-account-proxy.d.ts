@@ -37,7 +37,7 @@ export function createPolicyEnforcedAccount(account: IWalletAccount, { blockchai
  */
 export type EnforcementContext = {
     /**
-     * - The raw account, read for its derivation path when resolving account-scope bindings.
+     * - The raw account the proxy wraps.
      */
     account: IWalletAccount;
     /**
@@ -48,6 +48,10 @@ export type EnforcementContext = {
      * - The wallet identifier (the same string passed to `registerWallet`).
      */
     blockchain: string;
+    /**
+     * - The derivation path captured at wrap time, used to resolve account-scope bindings. Captured here rather than re-read from `account.path` on each call so a later change to `account.path` cannot make a path-bound rule miss.
+     */
+    path: string | undefined;
     /**
      * - The index passed to `wdk.getAccount(wallet, index)`, when the account was retrieved that way.
      */
