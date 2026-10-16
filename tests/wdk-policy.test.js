@@ -778,6 +778,69 @@ describe('WDK — policy engine', () => {
   // -------------------------------------------------------------------------
 
   describe('internal-reference containment', () => {
+    test('a per-account registered protocol receives the governed account, so its internal account writes are policy-gated', async () => {
+      class MySwapProtocol extends SwapProtocol {
+        constructor (account) { super(); this._account = account }
+        async swap () { return this._account.sendTransaction({ to: RECIPIENT, value: 1n }) }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'allow-swap-deny-send',
+          name: 'allow-swap-deny-send',
+          scope: 'project',
+          rules: [
+            { name: 'allow-swap', operation: 'swap', action: 'ALLOW', conditions: [] },
+            { name: 'deny-send', operation: 'sendTransaction', action: 'DENY', conditions: [] }
+          ]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      // Per-account protocols are built lazily against the governed account they
+      // are requested through, so their internal account calls are policy-gated.
+      account.registerProtocol('velora', MySwapProtocol, {})
+      const swap = account.getSwapProtocol('velora')
+
+      const denied = await catchAsync(() => swap.swap())
+
+      expect(denied.name).toBe('PolicyViolationError')
+      expect(denied.ruleName).toBe('deny-send')
+      expect(sendTransactionMock).not.toHaveBeenCalled()
+    })
+
+    test('a wdk.registerProtocol protocol is built against the raw account, so a constructor that reads account._config does not throw', async () => {
+      // Published protocols (Velora, Aave, USDT0) read `account._config` in
+      // their constructors. The proxy hides `_` members, so building them
+      // against the governed account would throw. Globals stay on the raw
+      // account until those packages stop reading `account._config`.
+      class ConfigReadingProtocol extends SwapProtocol {
+        constructor (account) { super(); this._provider = account._config.provider }
+        async swap () { return DUMMY_TX_HASH }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, { _config: { provider: 'rpc' } }))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerProtocol('ethereum', 'velora', ConfigReadingProtocol, {})
+        .registerPolicy({
+          id: 'allow-swap',
+          name: 'allow-swap',
+          scope: 'project',
+          rules: [{ name: 'allow-swap', operation: 'swap', action: 'ALLOW', conditions: [] }]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      expect(() => account.getSwapProtocol('velora')).not.toThrow()
+      expect(() => account.simulate.getSwapProtocol('velora')).not.toThrow()
+      expect(await account.getSwapProtocol('velora').swap()).toBe(DUMMY_TX_HASH)
+    })
+
     test('key material (keyPair) is not reachable through a governed account', async () => {
       getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, {
         keyPair: { privateKey: new Uint8Array([1, 2, 3]) }
@@ -790,6 +853,54 @@ describe('WDK — policy engine', () => {
       const account = await wdk.getAccount('ethereum', 0)
 
       expect(account.keyPair).toBeUndefined()
+    })
+
+    test('simulate builds a per-account protocol against the governed account, not the raw one', async () => {
+      let seenKeyPair = 'unset'
+
+      class CapturingSwapProtocol extends SwapProtocol {
+        constructor (account) { super(); seenKeyPair = account.keyPair }
+        async swap () { return DUMMY_TX_HASH }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount(PATH_DEFAULT, {
+        keyPair: { privateKey: new Uint8Array([1, 2, 3]) }
+      }))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(projectAllowAll('p'))
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      account.registerProtocol('velora', CapturingSwapProtocol, {})
+
+      // simulate must build the protocol against the proxy, which hides keyPair;
+      // otherwise a registered class could read key material past a DENY.
+      account.simulate.getSwapProtocol('velora')
+
+      expect(seenKeyPair).toBeUndefined()
+    })
+
+    test('valueOf returns the proxy, not the unwrapped account or protocol', async () => {
+      class MySwapProtocol extends SwapProtocol {
+        async swap (opts) { return DUMMY_SWAP_RESULT }
+      }
+
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerProtocol('ethereum', 'velora', MySwapProtocol, {})
+        .registerPolicy(projectAllowAll('p'))
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      expect(account.valueOf()).toBe(account)
+
+      const swap = account.getSwapProtocol('velora')
+
+      expect(swap.valueOf()).toBe(swap)
     })
 
     test('internal references (_signer, _provider, _config) are not reachable through a governed account', async () => {
@@ -1570,6 +1681,68 @@ wdk.registerPolicy({
       expect(err.policyId).toBe('platform-denylist')
     })
 
+    test.each(['override-first', 'deny-first'])('a later account-scope DENY wins over an override ALLOW (%s)', async (order) => {
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      const override = {
+        id: 'treasury',
+        name: 'treasury',
+        scope: 'account',
+        wallet: 'ethereum',
+        accounts: [PATH_DEFAULT],
+        rules: [{ name: 'treasury-allow', operation: 'sendTransaction', action: 'ALLOW', override_broader_scope: true, conditions: [] }]
+      }
+
+      const deny = {
+        id: 'account-freeze',
+        name: 'account-freeze',
+        scope: 'account',
+        wallet: 'ethereum',
+        accounts: [PATH_DEFAULT],
+        rules: [{ name: 'freeze', operation: 'sendTransaction', action: 'DENY', conditions: [] }]
+      }
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {})
+
+      if (order === 'override-first') {
+        wdk.registerPolicy(override).registerPolicy(deny)
+      } else {
+        wdk.registerPolicy(deny).registerPolicy(override)
+      }
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 50n }))
+
+      expect(err.name).toBe('PolicyViolationError')
+      expect(err.policyId).toBe('account-freeze')
+    })
+
+    test('a later ALLOW condition is not evaluated once an override is recorded', async () => {
+      getAccountMock.mockResolvedValue(buildAccount())
+
+      const laterCondition = jest.fn(() => true)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'treasury',
+          name: 'treasury',
+          scope: 'account',
+          wallet: 'ethereum',
+          accounts: [PATH_DEFAULT],
+          rules: [
+            { name: 'override', operation: 'sendTransaction', action: 'ALLOW', override_broader_scope: true, conditions: [] },
+            { name: 'later', operation: 'sendTransaction', action: 'ALLOW', conditions: [laterCondition] }
+          ]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const result = await account.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(result.hash).toBe(DUMMY_TX_HASH)
+      expect(laterCondition).not.toHaveBeenCalled()
+    })
+
     test('account-scope policies only engage for accounts whose path is in the accounts array', async () => {
       getAccountByPathMock.mockImplementation(async (path) => buildAccount(path))
 
@@ -2138,7 +2311,7 @@ wdk.registerPolicy({
       expect(swapInstanceMock).not.toHaveBeenCalled()
     })
 
-    test('a protocol method (bridge) that internally calls account.sendTransaction triggers nested-call escape', async () => {
+    test('a protocol method (bridge) that internally calls account.sendTransaction has the nested call policy-evaluated', async () => {
       const condition = jest.fn().mockReturnValue(true)
 
       class MyBridgeProtocol extends BridgeProtocol {
@@ -2152,7 +2325,6 @@ wdk.registerPolicy({
 
       wdk
         .registerWallet('ethereum', WalletManagerMock, {})
-        .registerProtocol('ethereum', 'oft', MyBridgeProtocol, {})
         .registerPolicy({
           id: 'nested',
           name: 'nested',
@@ -2164,14 +2336,20 @@ wdk.registerPolicy({
         })
 
       const account = await wdk.getAccount('ethereum', 0)
+
+      account.registerProtocol('oft', MyBridgeProtocol, {})
       const bridge = account.getBridgeProtocol('oft')
 
       const result = await bridge.bridge()
 
       expect(result.hash).toBe(DUMMY_TX_HASH)
-      expect(condition).toHaveBeenCalledTimes(1)
+      expect(condition).toHaveBeenCalledTimes(2)
       expect(condition).toHaveBeenCalledWith(expect.objectContaining({
         operation: 'bridge',
+        wallet: 'ethereum'
+      }))
+      expect(condition).toHaveBeenCalledWith(expect.objectContaining({
+        operation: 'sendTransaction',
         wallet: 'ethereum'
       }))
       expect(sendTransactionMock).toHaveBeenCalledTimes(1)
@@ -2888,6 +3066,51 @@ wdk.registerPolicy({
       expect(err2.policyId).toBe('path-bound')
     })
 
+    test('a derivation suffix does not match an account whose real path is the full BIP-44 path', async () => {
+      const fullPath = "m/44'/60'/0'/0/0"
+
+      getAccountMock.mockResolvedValue(buildAccount(fullPath))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'suffix',
+          name: 'suffix',
+          scope: 'account',
+          wallet: 'ethereum',
+          accounts: ["0'/0/0"],
+          rules: [{ name: 'deny', operation: 'sendTransaction', action: 'DENY', conditions: [] }]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const result = await account.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(account.path).toBe(fullPath)
+      expect(result.hash).toBe(DUMMY_TX_HASH)
+    })
+
+    test('the full account.path matches, governing the account', async () => {
+      const fullPath = "m/44'/60'/0'/0/0"
+
+      getAccountMock.mockResolvedValue(buildAccount(fullPath))
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy({
+          id: 'full-path',
+          name: 'full-path',
+          scope: 'account',
+          wallet: 'ethereum',
+          accounts: [fullPath],
+          rules: [{ name: 'deny', operation: 'sendTransaction', action: 'DENY', conditions: [] }]
+        })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('full-path')
+    })
+
     test('rejects accounts entries that are neither non-empty strings nor non-negative integers', () => {
       wdk.registerWallet('ethereum', WalletManagerMock, {})
 
@@ -2934,12 +3157,9 @@ wdk.registerPolicy({
       expect(err.policyId).toBe('freeze')
     })
 
-    test.each([
-      ['Object.defineProperty(path)', (a) => Object.defineProperty(a, 'path', { value: "0'/0/9" })],
-      ['path assignment', (a) => { a.path = "0'/0/9" }],
-      ['_path assignment', (a) => { a._path = "0'/0/9" }]
-    ])('the proxy refuses to change or shadow the path via %s', async (_label, mutate) => {
-      getAccountMock.mockResolvedValue(buildAccount())
+    test('simulate is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
 
       wdk
         .registerWallet('ethereum', WalletManagerMock, {})
@@ -2948,8 +3168,72 @@ wdk.registerPolicy({
 
       const account = await wdk.getAccount('ethereum', 0)
 
-      expect(() => mutate(account)).toThrow(TypeError)
-      expect(account.path).toBe(PATH_DEFAULT)
+      raw.path = "0'/0/9"
+
+      const result = await account.simulate.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(result.decision).toBe('DENY')
+      expect(result.policy_id).toBe('freeze')
+    })
+
+    test('simulate.getXProtocol is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      class MySwapProtocol extends SwapProtocol {
+        async swap () { return DUMMY_SWAP_RESULT }
+      }
+
+      const freezeSwap = { id: 'freeze', name: 'freeze', scope: 'account', wallet: 'ethereum', accounts: [PATH_DEFAULT], rules: [{ name: 'deny', operation: 'swap', action: 'DENY', conditions: [] }] }
+
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerProtocol('ethereum', 'velora', MySwapProtocol, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freezeSwap)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const result = await account.simulate.getSwapProtocol('velora').swap({ tokenIn: 'A', tokenOut: 'B', tokenInAmount: 1n })
+
+      expect(result.decision).toBe('DENY')
+      expect(result.policy_id).toBe('freeze')
+    })
+
+    test('a later getAccount() stays governed after the account path is reassigned', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {}).registerPolicy(freeze)
+
+      await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
+    })
+
+    test('a later getAccount() stays governed after the prototype path getter is swapped', async () => {
+      const raw = buildAccount()
+      delete raw.path
+      Object.setPrototypeOf(raw, { get path () { return PATH_DEFAULT } })
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {}).registerPolicy(freeze)
+
+      await wdk.getAccount('ethereum', 0)
+
+      Object.setPrototypeOf(raw, { get path () { return "0'/0/9" } })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
     })
   })
 

@@ -35,14 +35,16 @@ import PolicyViolationError, { PolicyConfigurationError } from './policy-error.j
  * @property {PolicyEngine} engine - The engine that evaluates each intercepted call.
  */
 
-const PROTOCOL_GETTERS = [
-  'getSwapProtocol',
-  'getBridgeProtocol',
-  'getLendingProtocol',
-  'getFiatProtocol',
-  'getSwidgeProtocol',
-  'getSdaProtocol'
-]
+const PROTOCOL_CATEGORIES = {
+  getSwapProtocol: 'swap',
+  getBridgeProtocol: 'bridge',
+  getLendingProtocol: 'lending',
+  getFiatProtocol: 'fiat',
+  getSwidgeProtocol: 'swidge',
+  getSdaProtocol: 'sda'
+}
+
+const PROTOCOL_GETTERS = Object.keys(PROTOCOL_CATEGORIES)
 
 const EMPTY_METHODS = new Map()
 
@@ -50,10 +52,6 @@ const governedMethodCache = new WeakMap()
 
 function isProtectedMember (prop) {
   return prop === 'keyPair' || (typeof prop === 'string' && prop.startsWith('_'))
-}
-
-function isPathMember (prop) {
-  return prop === 'path' || prop === '_path'
 }
 
 /**
@@ -100,6 +98,10 @@ function createGuardedProxy (subject, substitutions, trusted, ctx) {
       const value = Reflect.get(target, prop, target)
 
       if (typeof value !== 'function') return value
+
+      // Inherited `Object.prototype` methods are left unbound so they keep the
+      // proxy as `this`; binding `valueOf` to the target would unwrap the proxy.
+      if (value === Object.prototype[prop]) return value
 
       // Wrap-time functions bind to the account (so internal `this.method()`
       // calls keep escaping the proxy); anything newer is governed.
@@ -149,18 +151,14 @@ function createGuardedProxy (subject, substitutions, trusted, ctx) {
       return Reflect.ownKeys(target).filter((prop) => !isProtectedMember(prop))
     },
 
-    // Refuse to change or shadow `path` / `_path` so a later `getAccount()`
-    // can't be handed a spoofed path and skip the wrap. Write to the target
-    // directly, not via `receiver`, which would re-enter `defineProperty`.
+    // Write to the target directly, not via `receiver`, which would re-enter
+    // `defineProperty` and refuse the write. An assigned callable then lands on
+    // the account and is governed on read.
     set (target, prop, value) {
-      if (isPathMember(prop)) return false
-
       return Reflect.set(target, prop, value)
     },
 
     defineProperty (target, prop, descriptor) {
-      if (isPathMember(prop)) return false
-
       // Refuse accessors and functions: an accessor could read protected state,
       // and a function belongs on the governed-on-read path via `set`.
       if ('get' in descriptor || 'set' in descriptor || typeof descriptor.value === 'function') return false
@@ -261,29 +259,27 @@ export async function createPolicyEnforcedAccount (account, { blockchain, path, 
     substitutions.set(op, buildEnforcedMethod(op, method.bind(account), ctx))
   }
 
-  for (const getterName of PROTOCOL_GETTERS) {
-    if (typeof account[getterName] !== 'function') continue
+  // Late-bound reference to the proxy, so protocols build against it and
+  // `registerProtocol` can hand it back.
+  const handle = { proxy: null }
 
-    const originalGetter = account[getterName].bind(account)
+  for (const getterName of PROTOCOL_GETTERS) {
+    if (typeof account._buildProtocol !== 'function') break
+
+    const category = PROTOCOL_CATEGORIES[getterName]
 
     substitutions.set(getterName, (label) => {
-      const protocol = originalGetter(label)
+      // Build against the proxy so the protocol's own account calls are gated.
+      const protocol = account._buildProtocol(category, label, handle.proxy)
 
       return wrapProtocolInProxy(protocol, ctx)
     })
   }
 
-  substitutions.set('simulate', buildSimulateMirror(enforcedOperations, ctx))
+  substitutions.set('simulate', buildSimulateMirror(enforcedOperations, ctx, handle))
 
-  // Late-bound reference to the proxy itself, so the `registerProtocol`
-  // interceptor below can return the proxy instead of the raw account.
-  const handle = { proxy: null }
-
-  // `account.registerProtocol(...)` returns the raw account by design (see
-  // `_registerProtocols` in wdk.js). Without intercepting,
-  // `proxy.registerProtocol(...).sendTransaction(...)` would skip enforcement
-  // entirely because the caller is no longer holding the proxy. Rewrite the
-  // return value to the proxy itself.
+  // `registerProtocol` returns the raw account by design; rewrite it to the
+  // proxy so chained `.registerProtocol(...).sendTransaction(...)` stays gated.
   if (typeof account.registerProtocol === 'function') {
     const registerProtocol = account.registerProtocol.bind(account)
 
@@ -433,7 +429,20 @@ function wrapProtocolInProxy (protocol, ctx) {
   return createGuardedProxy(protocol, substitutions, trusted, ctx)
 }
 
-function buildSimulateMirror (methodNames, ctx) {
+/**
+ * Builds the `simulate` mirror: a method per governed operation that evaluates
+ * policy without executing. Since it never runs the operation, it only checks
+ * the operation named, not the account calls that operation would make at run
+ * time. (For a protocol added via `account.registerProtocol` a real call does
+ * evaluate those internal calls too; a `wdk.registerProtocol` protocol runs on
+ * the raw account, so its internal calls are not evaluated.)
+ *
+ * @param {string[]} methodNames - The governed operation names to mirror.
+ * @param {EnforcementContext} ctx - The per-account enforcement state.
+ * @param {{ proxy: object }} handle - Late-bound reference to the enforced proxy.
+ * @returns {object} The `simulate` surface.
+ */
+function buildSimulateMirror (methodNames, ctx, handle) {
   const simulate = Object.create(null)
 
   for (const name of methodNames) {
@@ -450,18 +459,20 @@ function buildSimulateMirror (methodNames, ctx) {
   }
 
   for (const getterName of PROTOCOL_GETTERS) {
-    if (typeof ctx.account[getterName] !== 'function') continue
+    if (typeof ctx.account._buildProtocol !== 'function') break
 
-    const originalGetter = ctx.account[getterName].bind(ctx.account)
+    const category = PROTOCOL_CATEGORIES[getterName]
 
-    // Resolve the protocol at call time and mirror the same surface the
-    // enforced proxy governs. Deriving it from a fixed verb list instead would
-    // hide every method outside that list from simulate while the engine still
-    // blocked it — the opposite of what simulate is for.
+    // Build against the proxy, like the enforced getter, so a per-account
+    // protocol never receives the raw account here. Enumerate the protocol's
+    // own methods rather than a fixed verb list, so simulate mirrors exactly
+    // the surface the engine governs.
     simulate[getterName] = (label) => {
       const out = Object.create(null)
 
-      for (const method of collectGovernedMethods(originalGetter(label), ctx.engine).keys()) {
+      const protocol = ctx.account._buildProtocol(category, label, handle.proxy)
+
+      for (const method of collectGovernedMethods(protocol, ctx.engine).keys()) {
         out[method] = async (...args) => {
           const context = buildContext({
             operation: method,

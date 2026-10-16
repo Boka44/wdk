@@ -98,8 +98,32 @@ const result = await account.simulate.sendTransaction({ to: '0x…', value: 1n }
 // → { decision: 'ALLOW' | 'DENY', policy_id, matched_rule, reason, trace }
 ```
 
-Policies have two scopes — `project` and `account`. A project-scope policy applies globally by default, or only to the wallets named in its `wallet` field (`wallet: 'ethereum'` or `wallet: ['ethereum', 'ton']`). The `wallet` value is the same string passed to `registerWallet`. It might be a chain name like `"ethereum"`, but it could equally be `"treasury-cold"` or any label the consumer chose; the engine treats it as an opaque key. An account-scope policy must declare a `wallet` and targets specific accounts within it, identified by either derivation path (`accounts: ["0'/0/0"]`) or integer index (`accounts: [0, 1]`) — index entries match accounts retrieved via `wdk.getAccount(wallet, index)`; path entries match either retrieval style. Evaluation is narrowest-first with `DENY` winning across scopes. Account-scope `ALLOW` rules can opt into `override_broader_scope: true` to short-circuit broader policies for explicit exceptions (e.g., treasury accounts). Conditions can be sync or async and may carry user-owned state via closures. Templates (`@tetherto/wdk-policy-templates`) and a portal UI for editing policies are coming in later phases.
+`account.simulate` evaluates only the operation you call. It does not execute it, so it can't see the calls that operation would make internally — simulating `getSwapProtocol(label).swap(...)` checks the `swap` operation, not the `sendTransaction` the swap would issue at run time. A real `swap()` evaluates both only for protocols registered via `account.registerProtocol`; a `wdk.registerProtocol` protocol runs on the raw account, so its internal calls are not evaluated.
 
+> **Breaking change:** on an account that is (or may become) policy-governed, protocols read through `getXProtocol` are built against the enforced proxy, which hides `_`-prefixed members. Protocols whose constructors read such members — including the published `@tetherto/wdk-protocol-*` packages (Velora, Aave, USDT0), which read `account._config` — must be registered with `wdk.registerProtocol` rather than `account.registerProtocol`, or `getXProtocol`/`simulate.getXProtocol` will throw. Protocols registered via `wdk.registerProtocol` are built against the raw account, so their internal account calls are **not** policy-evaluated.
+
+Policies have two scopes — `project` and `account`. A project-scope policy applies globally by default, or only to the wallets named in its `wallet` field (`wallet: 'ethereum'` or `wallet: ['ethereum', 'ton']`). The `wallet` value is the same string passed to `registerWallet`. It might be a chain name like `"ethereum"`, but it could equally be `"treasury-cold"` or any label the consumer chose; the engine treats it as an opaque key. An account-scope policy must declare a `wallet` and targets specific accounts within it, identified by either the full `account.path` (`accounts: ["m/44'/60'/0'/0/0"]` for the first Ethereum account) or integer index (`accounts: [0, 1]`) — index entries match accounts retrieved via `wdk.getAccount(wallet, index)`; path entries match either retrieval style. Evaluation is narrowest-first with `DENY` winning across scopes. Account-scope `ALLOW` rules can opt into `override_broader_scope: true` to short-circuit broader policies for explicit exceptions (e.g., treasury accounts). Conditions can be sync or async and may carry user-owned state via closures. Templates (`@tetherto/wdk-policy-templates`) and a portal UI for editing policies are coming in later phases.
+
+### Account policy paths
+
+A string entry in `accounts` matches an account only when it exactly equals the account's `path` — and `path` is the full BIP-44 derivation path, `m/44'/60'/0'/0/0` for the first Ethereum account, not the `"0'/0/0"` suffix you hand to `getAccountByPath`. Select by that suffix and the match fails silently: it never equals the real path, so the policy does not attach, and unless another policy applies the account stays ungoverned — `keyPair` readable, writes unchecked, no error. The prefix varies by chain, wallet configuration, and signer, so never assume it; read the account's own `path` and select on that:
+
+```javascript
+const account = await wdk.getAccount('ethereum', 0)
+
+wdk.registerPolicy({
+  id: 'block-signing',
+  name: 'Block signing for this account',
+  scope: 'account',
+  wallet: 'ethereum',
+  accounts: [account.path],
+  rules: [{ name: 'deny-sign', operation: 'sign', action: 'DENY', conditions: [] }]
+})
+
+// A handle taken before the policy was registered is ungoverned; fetch again.
+const governed = await wdk.getAccount('ethereum', 0)
+await governed.sign('message') // throws PolicyViolationError
+```
 ### Condition context
 
 Every condition receives a single frozen context object with four fields: `operation` (the intercepted operation name), `wallet` (the identifier the account belongs to — the same string passed to `registerWallet`), `account` (a read-only view exposing reads and quotes but no signing or write methods), and `args` (the full argument array the call was made with, snapshotted at evaluation time).
