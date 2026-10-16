@@ -3134,6 +3134,108 @@ wdk.registerPolicy({
       }
     })
   })
+
+  describe('account path binding integrity', () => {
+    const allowAll = { id: 'allow-all', name: 'allow-all', scope: 'project', rules: [{ name: 'a', operation: '*', action: 'ALLOW', conditions: [] }] }
+    const freeze = { id: 'freeze', name: 'freeze', scope: 'account', wallet: 'ethereum', accounts: [PATH_DEFAULT], rules: [{ name: 'deny', operation: 'sendTransaction', action: 'DENY', conditions: [] }] }
+
+    test('a path-bound DENY is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freeze)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
+    })
+
+    test('simulate is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freeze)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const result = await account.simulate.sendTransaction({ to: RECIPIENT, value: 1n })
+
+      expect(result.decision).toBe('DENY')
+      expect(result.policy_id).toBe('freeze')
+    })
+
+    test('simulate.getXProtocol is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      class MySwapProtocol extends SwapProtocol {
+        async swap () { return DUMMY_SWAP_RESULT }
+      }
+
+      const freezeSwap = { id: 'freeze', name: 'freeze', scope: 'account', wallet: 'ethereum', accounts: [PATH_DEFAULT], rules: [{ name: 'deny', operation: 'swap', action: 'DENY', conditions: [] }] }
+
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerProtocol('ethereum', 'velora', MySwapProtocol, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freezeSwap)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const result = await account.simulate.getSwapProtocol('velora').swap({ tokenIn: 'A', tokenOut: 'B', tokenInAmount: 1n })
+
+      expect(result.decision).toBe('DENY')
+      expect(result.policy_id).toBe('freeze')
+    })
+
+    test('a later getAccount() stays governed after the account path is reassigned', async () => {
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {}).registerPolicy(freeze)
+
+      await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
+    })
+
+    test('a later getAccount() stays governed after the prototype path getter is swapped', async () => {
+      const raw = buildAccount()
+      delete raw.path
+      Object.setPrototypeOf(raw, { get path () { return PATH_DEFAULT } })
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk.registerWallet('ethereum', WalletManagerMock, {}).registerPolicy(freeze)
+
+      await wdk.getAccount('ethereum', 0)
+
+      Object.setPrototypeOf(raw, { get path () { return "0'/0/9" } })
+
+      const account = await wdk.getAccount('ethereum', 0)
+      const err = await catchAsync(() => account.sendTransaction({ to: RECIPIENT, value: 1n }))
+
+      expect(err.policyId).toBe('freeze')
+    })
+  })
   // -------------------------------------------------------------------------
   // Method coverage: deny-by-default proxy + exclusion set
   // -------------------------------------------------------------------------

@@ -101,6 +101,9 @@ export default class WDK {
 
     /** @private */
     this._decoratedAccounts = new WeakSet()
+
+    /** @private */
+    this._accountPaths = new WeakMap()
   }
 
   /**
@@ -341,7 +344,19 @@ export default class WDK {
 
   /** @private */
   async _applyPolicies (account, { blockchain, index }) {
-    return this._policyEngine.applyPoliciesTo(account, { blockchain, path: account.path, index })
+    // Record each raw account's derivation path the first time WDK sees it, and
+    // route policy evaluation through that. `account.path` is a prototype getter
+    // on real wallet accounts, so re-reading it lets a caller spoof the path
+    // (reassigning it, swapping the prototype, or returning the raw account from
+    // an added method) and make a later `getAccount()` skip the wrap.
+    let path = this._accountPaths.get(account)
+
+    if (path === undefined) {
+      path = account.path
+      this._accountPaths.set(account, path)
+    }
+
+    return this._policyEngine.applyPoliciesTo(account, { blockchain, path, index })
   }
 
   /** @private */
