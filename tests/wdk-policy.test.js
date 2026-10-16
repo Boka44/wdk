@@ -2953,6 +2953,32 @@ wdk.registerPolicy({
       expect(result.policy_id).toBe('freeze')
     })
 
+    test('simulate.getXProtocol is evaluated against the wrap-time path even if the account path changes afterwards', async () => {
+      class MySwapProtocol extends SwapProtocol {
+        async swap () { return DUMMY_SWAP_RESULT }
+      }
+
+      const freezeSwap = { id: 'freeze', name: 'freeze', scope: 'account', wallet: 'ethereum', accounts: [PATH_DEFAULT], rules: [{ name: 'deny', operation: 'swap', action: 'DENY', conditions: [] }] }
+
+      const raw = buildAccount()
+      getAccountMock.mockResolvedValue(raw)
+
+      wdk
+        .registerWallet('ethereum', WalletManagerMock, {})
+        .registerProtocol('ethereum', 'velora', MySwapProtocol, {})
+        .registerPolicy(allowAll)
+        .registerPolicy(freezeSwap)
+
+      const account = await wdk.getAccount('ethereum', 0)
+
+      raw.path = "0'/0/9"
+
+      const result = await account.simulate.getSwapProtocol('velora').swap({ tokenIn: 'A', tokenOut: 'B', tokenInAmount: 1n })
+
+      expect(result.decision).toBe('DENY')
+      expect(result.policy_id).toBe('freeze')
+    })
+
     test('a later getAccount() stays governed after the account path is reassigned', async () => {
       const raw = buildAccount()
       getAccountMock.mockResolvedValue(raw)
